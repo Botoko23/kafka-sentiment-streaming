@@ -1,0 +1,5 @@
+kafka-env
+.idea
+.DS_Store 
+__pycache__
+credentials.json

@@ -1,0 +1,104 @@
+version: '3.8'
+
+x-celery-worker-template: &celery-worker-template
+  build:
+    context: ./workers 
+    dockerfile: Dockerfile
+  depends_on:
+    - redis
+  environment:
+    CELERY_BROKER_URL: "redis://redis:6379/0"
+  healthcheck:
+    test: ["CMD", "celery", "-A", "cel_main", "inspect", "ping"]
+    interval: 5s
+    timeout: 30s
+    retries: 3
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo > /dev/tcp/kafka/9092"]
+      interval: 5s
+      timeout: 30s
+      retries: 5
+
+  producer:
+    build:
+      context: ./kafka_producer
+      dockerfile: Dockerfile
+    container_name: producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      consumer:
+        condition: service_started
+    environment:
+      KAFKA_BROKER: "kafka:9092"
+      KAFKA_TOPIC: "test"
+      KAFKA_HOST: "kafka"
+      KAFKA_PORT: 9092
+
+  consumer:
+      build:
+        context: ./kafka_consumer  # Create a folder for your consumer app
+        dockerfile: Dockerfile
+      container_name: consumer
+      depends_on:
+        kafka:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+        celery_worker_1:
+          condition: service_started
+        celery_worker_2:
+          condition: service_started
+      environment:
+        KAFKA_BROKER: "kafka:9092"
+        KAFKA_TOPIC: "test"
+        CONSUMER_GROUP: "test"
+        KAFKA_HOST: "kafka"
+        KAFKA_PORT: 9092
+        CELERY_BROKER_URL: "redis://redis:6379/0"
+
+  celery_worker_1:
+    <<: *celery-worker-template
+    container_name: celery_worker_1
+    command: celery -A cel_main worker --loglevel=info -n worker1@%h
+
+  celery_worker_2:
+    <<: *celery-worker-template
+    container_name: celery_worker_2
+    command: celery -A cel_main worker --loglevel=info -n worker2@%h
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"  # Redis will be used as the broker for Celery tasks
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 30s
+      retries: 5
+    restart: always
